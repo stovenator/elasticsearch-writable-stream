@@ -88,6 +88,7 @@ function ElasticsearchWritable(client, options) {
     this.flushTimeout = options.flushTimeout || null;
     this.writtenRecords = 0;
     this.queue = [];
+    this.ignore_errors = options.ignore_errors || [];
 }
 
 /**
@@ -101,33 +102,54 @@ ElasticsearchWritable.prototype.bulkWrite = function bulkWrite(records, callback
     this.client.bulk({ body: records }, function bulkCallback(err, data) {
         if (err) {
             err.records = records;
-
             return callback(err);
         }
 
         if (data.errors === true) {
-            var errors = _.chain(data.items)
-                .map(function(item) {
-                    var error = _.map(item, 'error')[0];
-
-                    if (_.isObject(error) && error.type) {
-                        error = error.type + '[' + error.reason + ']';
+            var ignored_errors = this.ignore_errors;
+            var error_list = _.chain(data.items)
+            .map(function(q){
+                var items = _.map(q, function(i){
+                    if (i.error && i.error.type){
+                        return i.error.type;
                     }
-
-                    return error;
-                })
-                .filter(_.isString)
-                .uniq()
-                .value();
-
-            if (this.logger) {
-                errors.forEach(this.logger.error.bind(this.logger));
+                });
+                return items[0];
+            })
+            .filter()
+            .uniq()
+            .difference(ignored_errors)
+            .value();
+            if (this.logger && error_list.length > 0) {
+                this.logger.debug(error_list);
             }
 
-            var error = new Error(errors);
-            error.records = records;
+            if (error_list && error_list.length > 0){
+                var errors = _.chain(data.items)
+                    .map(function(item) {
+                        var error = _.map(item, 'error')[0];
 
-            return callback(error);
+
+
+                        if (_.isObject(error) && error.type) {
+                            error = error.type + '[' + error.reason + ']';
+                        }
+
+                        return error;
+                    })
+                    .filter(_.isString)
+                    .uniq()
+                    .value();
+
+                if (this.logger) {
+                    errors.forEach(this.logger.error.bind(this.logger));
+                }
+
+                var error = new Error(errors);
+                error.records = records;
+
+                return callback(error);
+            }
         }
 
         callback();
